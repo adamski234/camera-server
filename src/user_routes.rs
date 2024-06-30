@@ -35,7 +35,6 @@ async fn register_user(database: MainDatabase, register_user_data: Json<Register
 	loop {
 		let query = users.filter(user_id.eq(inserted_user_id)).count();
 		let count = database.run(move |conn| query.get_result::<i64>(conn)).await;
-		println!("Count: {:#?}", count);
 		match count {
 			Ok(0) => {
 				break;
@@ -59,8 +58,15 @@ async fn register_user(database: MainDatabase, register_user_data: Json<Register
 		Ok(_) => {
 			return Ok(Json::from(RegistrationResult {}));
 		}
+		Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::UniqueViolation, _)) => {
+			return Err(status::Custom(Status::BadRequest, Json::from(Error { 
+				code: String::from("AlreadyExists"), explanation: format!("One of the unique parameters already exists")
+			})));
+		}
 		Err(_) => {
-			return Err(status::Custom(Status::BadRequest, Json::from(Error { code: String::from("AlreadyExists"), explanation: String::from("One of the unique parameters already exists") })));
+			return Err(status::Custom(Status::InternalServerError, Json::from(Error {
+				code: String::from("InternalError"), explanation: String::from("Unknown error. Contact administrator.")
+			})));
 		}
 	}
 }
