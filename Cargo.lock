@@ -231,6 +231,7 @@ dependencies = [
  "chrono",
  "diesel",
  "dotenvy",
+ "rand",
  "rocket",
  "rocket_sync_db_pools",
  "rocket_ws",

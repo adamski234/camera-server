@@ -1,5 +1,6 @@
 use argon2::{password_hash::{rand_core::OsRng, SaltString}, Argon2, PasswordHasher};
-use diesel::{RunQueryDsl, insert_into};
+use diesel::{QueryDsl, insert_into, ExpressionMethods, RunQueryDsl};
+use rand::Rng;
 use rocket::{http::Status, post, response::status, routes, serde::json::Json, Route};
 use serde::{Deserialize, Serialize};
 
@@ -29,8 +30,26 @@ async fn register_user(database: MainDatabase, register_user_data: Json<Register
 	let salt = SaltString::generate(&mut OsRng);
 	let hasher = Argon2::default();
 	let hashed_password = hasher.hash_password(data.password.as_bytes(), &salt).unwrap().to_string();
+	let mut inserted_user_id = [0u8; 16];
+	rand::thread_rng().fill(&mut inserted_user_id);
+	loop {
+		let query = users.filter(user_id.eq(inserted_user_id)).count();
+		let count = database.run(move |conn| query.get_result::<i64>(conn)).await;
+		println!("Count: {:#?}", count);
+		match count {
+			Ok(0) => {
+				break;
+			}
+			Ok(_) => {
+				rand::thread_rng().fill(&mut inserted_user_id);
+			}
+			Err(_) => {
+				break;
+			}
+		}
+	}
 	let query = insert_into(users).values(User {
-		user_id: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15],
+		user_id: Vec::from(inserted_user_id),
 		username: data.username,
 		password: hashed_password,
 		email: data.email,
