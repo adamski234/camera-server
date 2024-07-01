@@ -1,5 +1,5 @@
 use argon2::{password_hash::{rand_core::OsRng, SaltString}, Argon2, PasswordHasher};
-use diesel::{QueryDsl, insert_into, ExpressionMethods, RunQueryDsl};
+use diesel::{insert_into, result::DatabaseErrorKind, ExpressionMethods, QueryDsl, RunQueryDsl};
 use rand::Rng;
 use rocket::{http::Status, post, response::status, routes, serde::json::Json, Route};
 use serde::{Deserialize, Serialize};
@@ -58,9 +58,9 @@ async fn register_user(database: MainDatabase, register_user_data: Json<Register
 		Ok(_) => {
 			return Ok(Json::from(RegistrationResult {}));
 		}
-		Err(diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::UniqueViolation, _)) => {
+		Err(diesel::result::Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
 			return Err(status::Custom(Status::BadRequest, Json::from(Error { 
-				code: String::from("AlreadyExists"), explanation: format!("One of the unique parameters already exists")
+				code: String::from("AlreadyExists"), explanation: String::from("One of the unique parameters already exists")
 			})));
 		}
 		Err(_) => {
@@ -72,8 +72,32 @@ async fn register_user(database: MainDatabase, register_user_data: Json<Register
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-struct RegisterUserData {
-	username: String,
-	password: String,
-	email: String
+pub struct RegisterUserData {
+	pub username: String,
+	pub password: String,
+	pub email: String
+}
+
+#[cfg(test)]
+mod tests {
+	use crate::tests_common;
+	use super::*;
+
+	#[test]
+	fn register_test() {
+		let client = tests_common::create_local_client();
+		let request = client.post("/user/register").json(&RegisterUserData {
+			email: String::from("email@example.com"),
+			password: String::from("password1"),
+			username: String::from("new_username"),
+		});
+		let repeat_request = request.clone();
+
+		let success_response = request.dispatch();
+		let unique_violation_response = repeat_request.dispatch();
+
+		assert_eq!(success_response.status(), Status::Ok);
+		assert_eq!(unique_violation_response.status(), Status::BadRequest);
+		assert_eq!(unique_violation_response.into_json::<Error>().unwrap().code, "AlreadyExists");
+	}
 }
