@@ -3,12 +3,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthToken {
-	username: String,
-	expiry: DateTime<Utc>
+	pub username: String,
+	/// Expiration time
+	pub exp: i64
 }
 
 impl AuthToken {
 	pub fn new(username: String, expiry: DateTime<Utc>) -> Self {
-		return Self { username, expiry };
+		return Self { username, exp: expiry.timestamp() };
 	}
 }

@@ -41,7 +41,8 @@ pub async fn setup_user(client: &asynchronous::Client) -> User {
 	}).dispatch().await;
 	assert_eq!(response.status(), Status::Ok);
 	let database = MainDatabase::get_one(client.rocket()).await.unwrap();
-	let created_user = database.run(|conn| users.filter(username.eq("new_username")).first::<User>(conn)).await.unwrap();
+	let mut created_user = database.run(|conn| users.filter(username.eq("new_username")).first::<User>(conn)).await.unwrap();
+	created_user.password = String::from("password1");
 	return created_user;
 }
 

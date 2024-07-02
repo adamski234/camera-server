@@ -75,7 +75,7 @@ async fn register_user(database: MainDatabase, register_user_data: Json<Register
 	}
 }
 
-#[derive(Serialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 struct LoginResult {
 	token: String
 }
@@ -147,6 +147,8 @@ pub struct RegisterUserData {
 
 #[cfg(test)]
 mod tests {
+	use jsonwebtoken::{decode, DecodingKey, Validation};
+
 	use crate::tests_common;
 	use super::*;
 
@@ -166,5 +168,36 @@ mod tests {
 		assert_eq!(success_response.status(), Status::Ok);
 		assert_eq!(unique_violation_response.status(), Status::BadRequest);
 		assert_eq!(unique_violation_response.into_json::<Error>().unwrap().code, "AlreadyExists");
+	}
+
+	#[rocket::async_test]
+	async fn login_test() {
+		let client = tests_common::create_local_async_client().await;
+		let user = tests_common::setup_user(&client).await;
+		let request = client.post("/user/login").json(&LoginUserData { 
+			password: user.password.clone(),
+			username: user.username.clone()
+		});
+		let response = request.dispatch().await;
+		assert_eq!(response.status(), Status::Ok);
+		
+		let token = response.into_json::<LoginResult>().await.unwrap().token;
+		let token_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET is not set");
+		let decoded_token = decode::<AuthToken>(&token, &DecodingKey::from_secret(token_secret.as_bytes()), &Validation::new(jsonwebtoken::Algorithm::HS512)).unwrap();
+		println!("{:#?}", decoded_token.header);
+		let token_data = decoded_token.claims;
+		assert_eq!(token_data.username, user.username);
+
+		let request = client.post("/user/login").json(&LoginUserData { password: user.password.clone() + "_wrong", username: user.username.clone() });
+		let response = request.dispatch().await;
+		assert_eq!(response.status(), Status::Unauthorized);
+		let return_code = response.into_json::<Error>().await.unwrap();
+		assert_eq!(return_code.code, "InvalidPassword");
+
+		let request = client.post("/user/login").json(&LoginUserData { password: user.password.clone(), username: user.username.clone() + "_no_exist" });
+		let response = request.dispatch().await;
+		assert_eq!(response.status(), Status::BadRequest);
+		let return_code = response.into_json::<Error>().await.unwrap();
+		assert_eq!(return_code.code, "UserNotFound");
 	}
 }
