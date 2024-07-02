@@ -5,9 +5,10 @@ edition = "2021"
 
 [dependencies]
 argon2 = "0.5.3"
-chrono = "0.4.38"
+chrono = { version = "0.4.38", features = ["serde"] }
 diesel = { version = "2.2.1", default-features = false, features = ["sqlite", "without-deprecated", "chrono"] }
 dotenvy = "0.15.7"
+jsonwebtoken = "9.3.0"
 rand = "0.8.5"
 rocket = { version = "0.5.1", features = ["secrets", "json"] }
 #rocket_okapi = { version = "0.8.0", features = ["swagger", "rocket_ws"], git = "https://github.com/adamski234/okapi", branch = "adamski234/update-rocket_ws" }

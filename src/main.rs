@@ -5,6 +5,7 @@ use rocket_sync_db_pools::database;
 mod schema;
 mod model;
 mod user_routes;
+mod auth;
 
 #[cfg(test)]
 mod tests_common;

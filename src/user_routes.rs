@@ -1,15 +1,18 @@
-use argon2::{password_hash::{rand_core::OsRng, SaltString}, Argon2, PasswordHasher};
+use argon2::{password_hash::{rand_core::OsRng, SaltString}, Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use chrono::{Duration, Utc};
 use diesel::{insert_into, result::DatabaseErrorKind, ExpressionMethods, QueryDsl, RunQueryDsl};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use rand::Rng;
 use rocket::{http::Status, post, response::status, routes, serde::json::Json, Route};
 use serde::{Deserialize, Serialize};
 
-use crate::{model::User, MainDatabase};
+use crate::{auth::AuthToken, model::User, MainDatabase};
 use crate::schema::users::dsl::*;
 
 pub fn routes() -> Vec<Route> {
 	return routes![
-		register_user
+		register_user,
+		login
 	];
 }
 
@@ -63,12 +66,76 @@ async fn register_user(database: MainDatabase, register_user_data: Json<Register
 				code: String::from("AlreadyExists"), explanation: String::from("One of the unique parameters already exists")
 			})));
 		}
-		Err(_) => {
+		Err(error) => {
+			eprintln!("{:?}", error);
 			return Err(status::Custom(Status::InternalServerError, Json::from(Error {
 				code: String::from("InternalError"), explanation: String::from("Unknown error. Contact administrator.")
 			})));
 		}
 	}
+}
+
+#[derive(Serialize, Debug, Default)]
+struct LoginResult {
+	token: String
+}
+
+#[post("/login", data = "<login_data>")]
+async fn login(database: MainDatabase, login_data: Json<LoginUserData>) -> UserResult<LoginResult> {
+	let login_data = login_data.0;
+	let query = users.filter(username.eq(login_data.username));
+	let user = database.run(move |conn| query.get_result::<User>(conn)).await;
+	match user {
+		Ok(user) => {
+			match PasswordHash::new(&user.password) {
+				Ok(hash) => {
+					match Argon2::default().verify_password(login_data.password.as_bytes(), &hash) {
+						Ok(_) => {
+							let token_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET is not set");
+							let expiry_time = Utc::now() + Duration::hours(4);
+							let header = Header::new(jsonwebtoken::Algorithm::HS512);
+							let token = encode(&header, &AuthToken::new(user.username, expiry_time), &EncodingKey::from_secret(token_secret.as_bytes())).unwrap();
+							return Ok(Json::from(LoginResult { token }));
+						}
+						Err(argon2::password_hash::Error::Password) => {
+							return Err(status::Custom(Status::Unauthorized, Json::from(Error {
+								code: String::from("InvalidPassword"), explanation: String::from("Invalid password for the user.")
+							})));
+						}
+						Err(error) => {
+							eprintln!("{:?}", error);
+							return Err(status::Custom(Status::InternalServerError, Json::from(Error {
+								code: String::from("InternalError"), explanation: String::from("Unknown password verification error. Contact administrator.")
+							})));
+						}
+					}
+				}
+				Err(error) => {
+					eprintln!("{:?}", error);
+					return Err(status::Custom(Status::InternalServerError, Json::from(Error {
+						code: String::from("InternalError"), explanation: String::from("Unknown password hashing error. Contact administrator.")
+					})));
+				}
+			}
+		}
+		Err(diesel::result::Error::NotFound) => {
+			return Err(status::Custom(Status::BadRequest, Json::from(Error {
+				code: String::from("UserNotFound"), explanation: String::from("User with specified username does not exist"),
+			})));
+		}
+		Err(error) => {
+			eprintln!("{:?}", error);
+			return Err(status::Custom(Status::InternalServerError, Json::from(Error {
+				code: String::from("InternalError"), explanation: String::from("Unknown error. Contact administrator.")
+			})));
+		}
+	}
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct LoginUserData {
+	pub username: String,
+	pub password: String,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
