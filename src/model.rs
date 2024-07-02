@@ -24,14 +24,3 @@ pub struct Device {
 	pub registration_first_stage: bool,
 	pub user_id: Vec<u8>,
 }
-
-#[derive(Debug, PartialEq, Queryable, Identifiable, Selectable, Associations)]
-#[diesel(table_name = authenticationtoken)]
-#[diesel(primary_key(token))]
-#[diesel(belongs_to(User))]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub struct AuthToken {
-	pub token: String,
-	pub user_id: Vec<u8>,
-	pub expired_date: chrono::NaiveDateTime
-}

@@ -1,14 +1,6 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
-    authenticationtoken (token) {
-        token -> Text,
-        user_id -> Binary,
-        expired_date -> Timestamp,
-    }
-}
-
-diesel::table! {
     device (device_id) {
         device_id -> Binary,
         mac_address -> Binary,
@@ -27,11 +19,9 @@ diesel::table! {
     }
 }
 
-diesel::joinable!(authenticationtoken -> users (user_id));
 diesel::joinable!(device -> users (user_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
-    authenticationtoken,
     device,
     users,
 );
