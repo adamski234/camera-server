@@ -20,6 +20,7 @@ pub struct PacketHeader {
 
 #[derive(Debug, Clone, Copy, DekuRead, DekuWrite, PartialEq, Eq)]
 #[deku(id_type = "u8", bits = 7)]
+#[non_exhaustive]
 pub enum Message {
 	#[deku(id = "0x00")]
 	NoOperation(EmptyPacket),

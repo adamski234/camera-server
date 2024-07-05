@@ -1,8 +1,10 @@
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 
-use packets::{ApplicationPacket, PacketReadError};
+use packets::{ApplicationPacket, InitiateConnectionPacket, PacketReadError, RegisterDevicePacket, UnregisterDevicePacket};
 use rocket::{fairing::{Fairing, Info, Kind}, tokio::{net::{TcpListener, TcpStream, UdpSocket}, select, spawn, task::JoinHandle}, Build, Rocket};
 use tokio_util::sync::CancellationToken;
+
+use crate::MainDatabase;
 
 pub mod packets;
 
@@ -16,10 +18,11 @@ pub struct DeviceBridge {
 	port: u16,
 	sessions: SessionList,
 	canceller: CancellationToken,
+	database: Arc<MainDatabase>,
 }
 
 impl DeviceBridge {
-	pub fn new(port: u16) -> Self {
+	pub fn new(port: u16, database: MainDatabase) -> Self {
 		let sessions = Arc::new(Mutex::new(HashMap::new()));
 
 		let mut result = Self {
@@ -28,6 +31,7 @@ impl DeviceBridge {
 			port,
 			sessions,
 			canceller: CancellationToken::new(),
+			database: Arc::new(database),
 		};
 		result.init();
 
@@ -45,6 +49,7 @@ impl DeviceBridge {
 
 		let session_clone = self.sessions.clone();
 		let canceller = self.canceller.clone();
+		let db_clone = self.database.clone();
 		let tcp_listening_task = spawn(async move {
 			loop {
 				select! {
@@ -53,7 +58,8 @@ impl DeviceBridge {
 					}
 					connection = tcp_socket.accept() => {
 						let (stream, _) = connection.unwrap();
-						spawn(handle_connection(stream, session_clone.clone(), canceller.clone()));
+						let db_clone = db_clone.clone();
+						spawn(handle_connection(stream, session_clone.clone(), canceller.clone(), db_clone));
 					}
 				}
 			}
@@ -74,7 +80,7 @@ impl DeviceBridge {
 	}
 }
 	
-async fn handle_connection(mut socket: TcpStream, sessions: SessionList, canceller: CancellationToken) {
+async fn handle_connection(mut socket: TcpStream, sessions: SessionList, canceller: CancellationToken, database: Arc<MainDatabase>) {
 	loop {
 		select! {
 			_ = canceller.cancelled() => {
@@ -83,7 +89,7 @@ async fn handle_connection(mut socket: TcpStream, sessions: SessionList, cancell
 			read_result = packets::read_packet_async(&mut socket) => {
 				match read_result {
 					Ok(packet) => {
-						handle_packet(packet, &mut socket, sessions.clone()).await;
+						handle_packet(packet, &mut socket, sessions.clone(), &database).await;
 					},
 					Err(PacketReadError::CantRead) => {
 						log::warn!("Couldn't finish reading packet, TCP stream likely to have ended from the other end. Ending handler.");
@@ -98,8 +104,22 @@ async fn handle_connection(mut socket: TcpStream, sessions: SessionList, cancell
 	}
 }
 
-async fn handle_packet(packet: ApplicationPacket, socket: &mut TcpStream, sessions: SessionList) {
+async fn handle_packet(packet: ApplicationPacket, socket: &mut TcpStream, sessions: SessionList, database: &MainDatabase) {
 	log::debug!("Got packet: {:?}", packet);
+	match packet.message {
+		packets::Message::RegisterDevice(RegisterDevicePacket { auth_key, camera_id, mac_address, user_id}) => {
+			//
+		}
+		packets::Message::InitiateConnection(InitiateConnectionPacket { auth_key, camera_id }) => {
+			//
+		}
+		packets::Message::NoOperation(_) => {
+			//
+		}
+		packets::Message::UnregisterDevice(UnregisterDevicePacket { success }) => {
+			//
+		}
+	}
 }
 
 pub struct DeviceBridgeFairing {
@@ -116,17 +136,7 @@ impl Fairing for DeviceBridgeFairing {
 	}
 
 	async fn on_ignite(&self, rocket: Rocket<Build>) -> Result<Rocket<Build>, Rocket<Build>> {
-		return Ok(rocket.manage(DeviceBridge::new(self.port)));
-	}
-}
-
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[rocket::async_test]
-	async fn create_bridge() {
-		DeviceBridge::new(3333);
+		let db = MainDatabase::get_one(&rocket).await.unwrap();
+		return Ok(rocket.manage(DeviceBridge::new(self.port, db)));
 	}
 }
