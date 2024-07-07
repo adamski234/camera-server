@@ -1,10 +1,14 @@
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 
+use diesel::{insert_into, result::{DatabaseErrorKind, Error}, QueryDsl, RunQueryDsl};
 use packets::{ApplicationPacket, InitiateConnectionPacket, PacketReadError, RegisterDevicePacket, UnregisterDevicePacket};
+use rand::Rng;
 use rocket::{fairing::{Fairing, Info, Kind}, tokio::{net::{TcpListener, TcpStream, UdpSocket}, select, spawn, task::JoinHandle}, Build, Rocket};
 use tokio_util::sync::CancellationToken;
 
-use crate::MainDatabase;
+use crate::{model::{Device, User}, MainDatabase};
+use crate::schema::device::dsl as device_dsl;
+use crate::schema::users::dsl as users_dsl;
 
 pub mod packets;
 
@@ -89,7 +93,18 @@ async fn handle_connection(mut socket: TcpStream, sessions: SessionList, cancell
 			read_result = packets::read_packet_async(&mut socket) => {
 				match read_result {
 					Ok(packet) => {
-						handle_packet(packet, &mut socket, sessions.clone(), &database).await;
+						match handle_packet(packet, &mut socket, sessions.clone(), &database).await {
+							Ok(_) => {
+								log::debug!("Finished packet handler");
+							}
+							Err(PacketHandlerError::Ending) => {
+								log::warn!("Connection loop received ending error. Exiting the loop.");
+								return;
+							}
+							Err(PacketHandlerError::NonEnding) => {
+								log::warn!("Connection loop received nonending error.");
+							}
+						};
 					},
 					Err(PacketReadError::CantRead) => {
 						log::warn!("Couldn't finish reading packet, TCP stream likely to have ended from the other end. Ending handler.");
@@ -104,11 +119,26 @@ async fn handle_connection(mut socket: TcpStream, sessions: SessionList, cancell
 	}
 }
 
-async fn handle_packet(packet: ApplicationPacket, socket: &mut TcpStream, sessions: SessionList, database: &MainDatabase) {
+/// Makes a decision to either kill the socket or not
+enum PacketHandlerError {
+	Ending,
+	NonEnding,
+}
+
+async fn handle_packet(packet: ApplicationPacket, socket: &mut TcpStream, sessions: SessionList, database: &MainDatabase) -> Result<(), PacketHandlerError> {
 	log::debug!("Got packet: {:?}", packet);
 	match packet.message {
-		packets::Message::RegisterDevice(RegisterDevicePacket { auth_key, camera_id, mac_address, user_id}) => {
-			//
+		packets::Message::RegisterDevice(data) => {
+			match handle_registration(socket, database, data).await {
+				Ok(_) => {
+					log::debug!("Finished registration handler");
+					return Ok(());
+				}
+				Err(_) => {
+					log::debug!("Bubbling ending registration error");
+					return Err(PacketHandlerError::Ending);
+				}
+			}
 		}
 		packets::Message::InitiateConnection(InitiateConnectionPacket { auth_key, camera_id }) => {
 			//
@@ -118,6 +148,79 @@ async fn handle_packet(packet: ApplicationPacket, socket: &mut TcpStream, sessio
 		}
 		packets::Message::UnregisterDevice(UnregisterDevicePacket { success }) => {
 			//
+		}
+	}
+	return Ok(());
+}
+
+enum DeviceRegisterError {
+	UserDoesNotExist,
+	DatabaseError(Error),
+	OtherError,
+}
+
+async fn handle_registration(socket: &mut TcpStream, database: &MainDatabase, register_packet: RegisterDevicePacket) -> Result<(), DeviceRegisterError> {
+	let RegisterDevicePacket { auth_key, camera_id, mac_address, user_id} = register_packet;
+
+	// TODO: Device ID needs to be generated in first stage, not checked. 
+	if camera_id == [0; 16] {
+		log::info!("Device sent empty camera ID, registering.");
+		let user_query = users_dsl::users.find(user_id);
+		let user = database.run(move |conn| user_query.first::<User>(conn)).await;
+		match user {
+			Ok(_) => {
+				log::debug!("Found user for new device registration: {:?}", user_id);
+				let mut new_device = Device {
+					auth_key: Vec::from(auth_key), 
+					device_id: Vec::from(camera_id),
+					mac_address: Vec::from(mac_address),
+					registration_first_stage: true,
+					user_id: Vec::from(user_id),
+				};
+				rand::thread_rng().fill(new_device.device_id.as_mut_slice());
+				loop {
+					let insert_query = insert_into(device_dsl::device).values(new_device.clone());
+					match database.run(|conn| insert_query.execute(conn)).await {
+						Ok(_) => {
+							log::info!("First stage registered new device");
+							return Ok(());
+						}
+						Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+							log::debug!("Device ID {:?} exists in database, regenerating ID", new_device.device_id);
+							rand::thread_rng().fill(new_device.device_id.as_mut_slice());
+						}
+						Err(err) => {
+							log::error!("Error while registering device: {:?}", err);
+							return Err(DeviceRegisterError::DatabaseError(err));
+						}
+					}
+				}
+			}
+			Err(Error::NotFound) => {
+				log::warn!("Device is trying to register with an unknown user id");
+				return Err(DeviceRegisterError::UserDoesNotExist);
+			}
+			Err(err) => {
+				log::warn!("Error while retrieving user in register handler: {:?}", err);
+				return Err(DeviceRegisterError::DatabaseError(err));
+			}
+		}
+	} else {
+		let device_query = device_dsl::device.find(camera_id);
+		let dev = database.run(move |conn| device_query.first::<Device>(conn)).await;
+		match dev {
+			Ok(device) => {
+				log::info!("Device {:?} is attempting to re-register (for now)", camera_id);
+				return Err(DeviceRegisterError::OtherError);
+			}
+			Err(Error::NotFound) => {
+				log::info!("Registering new device: {:?}", camera_id);
+				return Ok(());
+			}
+			Err(err) => {
+				log::warn!("Error while retrieving device in register handler: {:?}", err);
+				return Err(DeviceRegisterError::DatabaseError(err));
+			}
 		}
 	}
 }

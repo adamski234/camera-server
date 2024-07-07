@@ -1,7 +1,5 @@
 #![feature(assert_matches)]
 #![feature(generic_arg_infer)]
-#![feature(f128)]
-#![feature(f16)]
 
 use device_connector::DeviceBridge;
 use rocket::launch;
