@@ -1,9 +1,10 @@
 use std::{collections::HashMap, sync::{Arc, Mutex}};
 
-use diesel::{insert_into, result::{DatabaseErrorKind, Error}, QueryDsl, RunQueryDsl};
-use packets::{ApplicationPacket, InitiateConnectionPacket, PacketReadError, RegisterDevicePacket, UnregisterDevicePacket};
+use deku::{DekuContainerWrite, DekuWriter};
+use diesel::{insert_into, result::{DatabaseErrorKind, Error}, update, ExpressionMethods, QueryDsl, RunQueryDsl};
+use packets::{ApplicationPacket, InitiateConnectionPacket, PacketHeader, PacketReadError, RegisterDevicePacket, UnregisterDevicePacket};
 use rand::Rng;
-use rocket::{fairing::{Fairing, Info, Kind}, tokio::{net::{TcpListener, TcpStream, UdpSocket}, select, spawn, task::JoinHandle}, Build, Rocket};
+use rocket::{fairing::{Fairing, Info, Kind}, tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream, UdpSocket}, select, spawn, task::JoinHandle}, Build, Rocket};
 use tokio_util::sync::CancellationToken;
 
 use crate::{model::{Device, User}, MainDatabase};
@@ -134,6 +135,9 @@ async fn handle_packet(packet: ApplicationPacket, socket: &mut TcpStream, sessio
 					log::debug!("Finished registration handler");
 					return Ok(());
 				}
+				Err(DeviceRegisterError::UnknownCameraID) => {
+					return Err(PacketHandlerError::NonEnding);
+				}
 				Err(_) => {
 					log::debug!("Bubbling ending registration error");
 					return Err(PacketHandlerError::Ending);
@@ -155,6 +159,8 @@ async fn handle_packet(packet: ApplicationPacket, socket: &mut TcpStream, sessio
 
 enum DeviceRegisterError {
 	UserDoesNotExist,
+	UnknownCameraID,
+	InvalidRegisterAttempt,
 	DatabaseError(Error),
 	OtherError,
 }
@@ -162,7 +168,6 @@ enum DeviceRegisterError {
 async fn handle_registration(socket: &mut TcpStream, database: &MainDatabase, register_packet: RegisterDevicePacket) -> Result<(), DeviceRegisterError> {
 	let RegisterDevicePacket { auth_key, camera_id, mac_address, user_id} = register_packet;
 
-	// TODO: Device ID needs to be generated in first stage, not checked. 
 	if camera_id == [0; 16] {
 		log::info!("Device sent empty camera ID, registering.");
 		let user_query = users_dsl::users.find(user_id);
@@ -183,6 +188,20 @@ async fn handle_registration(socket: &mut TcpStream, database: &MainDatabase, re
 					match database.run(|conn| insert_query.execute(conn)).await {
 						Ok(_) => {
 							log::info!("First stage registered new device");
+							let response = ApplicationPacket {
+								header: packets::PacketHeader {
+									session_id: [0; 16],
+									buffer_size: 54,
+									is_response: true
+								},
+								message: packets::Message::RegisterDevice(RegisterDevicePacket {
+									auth_key,
+									camera_id: new_device.device_id.try_into().unwrap(),
+									mac_address,
+									user_id,
+								})
+							};
+							socket.write_all(&response.to_bytes().unwrap()).await.unwrap();
 							return Ok(());
 						}
 						Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
@@ -209,13 +228,36 @@ async fn handle_registration(socket: &mut TcpStream, database: &MainDatabase, re
 		let device_query = device_dsl::device.find(camera_id);
 		let dev = database.run(move |conn| device_query.first::<Device>(conn)).await;
 		match dev {
-			Ok(device) => {
-				log::info!("Device {:?} is attempting to re-register (for now)", camera_id);
-				return Err(DeviceRegisterError::OtherError);
+			Ok(mut device) => {
+				if device.registration_first_stage {
+					// get auth key from camera
+					log::info!("Device enters second registration stage.");
+					device.auth_key = Vec::from(auth_key);
+					let query = update(device_dsl::device).set(device);
+					database.run(move |conn| query.execute(conn)).await.unwrap();
+					let response = ApplicationPacket {
+						header: PacketHeader {
+							session_id: [0; 16],
+							buffer_size: 54,
+							is_response: true,
+						},
+						message: packets::Message::RegisterDevice(RegisterDevicePacket {
+							auth_key,
+							camera_id,
+							mac_address,
+							user_id,
+						}),
+					};
+					socket.write_all(&response.to_bytes().unwrap()).await.unwrap();
+					return Ok(());
+				} else {
+					log::warn!("Already registered device {:?} is attempting to register", device.device_id);
+					return Err(DeviceRegisterError::InvalidRegisterAttempt);
+				}
 			}
 			Err(Error::NotFound) => {
-				log::info!("Registering new device: {:?}", camera_id);
-				return Ok(());
+				log::warn!("Device send non-empty but unknown ID: {:?}", camera_id);
+				return Err(DeviceRegisterError::UnknownCameraID);
 			}
 			Err(err) => {
 				log::warn!("Error while retrieving device in register handler: {:?}", err);

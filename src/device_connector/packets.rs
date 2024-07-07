@@ -113,6 +113,7 @@ pub async fn read_packet_async(socket: &mut TcpStream) -> Result<ApplicationPack
 			panic!("Unhandled error while parsing header: {:#?}", other_err);
 		}
 	}
+	assert!(header.buffer_size < 100, "Packet buffer size ({}) is suspiciously big", header.buffer_size);
 	let mut packet_buffer = Vec::with_capacity(21 + header.buffer_size as usize);
 	unsafe {
 		// SAFETY: All possible bit values are valid for `usize`.

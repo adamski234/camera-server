@@ -12,7 +12,7 @@ pub struct User {
 	pub email: String,
 }
 
-#[derive(Debug, PartialEq, Queryable, Identifiable, Selectable, Associations, Insertable, Clone)]
+#[derive(Debug, Clone, PartialEq, Queryable, Identifiable, Selectable, Associations, Insertable, AsChangeset)]
 #[diesel(table_name = device)]
 #[diesel(primary_key(device_id))]
 #[diesel(belongs_to(User))]
